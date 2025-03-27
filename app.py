@@ -98,36 +98,144 @@ def init_session_state():
             'temperature': 80.0    # °C
         }
     
+    # Initialize event_log and communication log
     if 'event_log' not in st.session_state:
         st.session_state.event_log = []
     
     if 'comm_log' not in st.session_state:
         st.session_state.comm_log = []
+    
+    # For event processing
+    if 'event_processing_ready' not in st.session_state:
+        st.session_state.event_processing_ready = True
+        
+    # For auto-refresh timing
+    if 'last_refresh_time' not in st.session_state:
+        st.session_state.last_refresh_time = time.time()
 
 def handle_event(event):
-    """Handle events from the device."""
-    logger.info(f"Event received: {json.dumps(event)}")
-    
-    # Add to event log
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.session_state.event_log.insert(0, {
-        "timestamp": timestamp,
-        "event": event
-    })
-    
-    # Handle alarm events
-    if event.get("type") == "event" and event.get("topic") == "alarm" and event.get("action") == "triggered":
-        data = event.get("data", {})
-        source = data.get("source", "unknown")
-        code = data.get("code", "unknown")
-        value = data.get("value", 0)
+    """
+    Handle events from the device.
+    This function is called from a background thread, so we need to be careful with session state.
+    """
+    try:
+        # Log the event
+        logger.info(f"Event received: {json.dumps(event)}")
         
-        # Refresh alarm status
+        # Create a global event queue that's thread-safe
+        if not hasattr(WiseledCommunicator, 'pending_events'):
+            WiseledCommunicator.pending_events = []
+            
+        # Add event to the pending queue for the main thread to process
+        WiseledCommunicator.pending_events.append({
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "event": event
+        })
+        
+        # Process alarm events for logging purposes only
+        if event.get("type") == "event" and event.get("topic") == "alarm" and event.get("action") == "triggered":
+            data = event.get("data", {})
+            source = data.get("source", "unknown")
+            code = data.get("code", "unknown")
+            value = data.get("value", 0)
+            
+            # Extract light ID from source (format: "light_X")
+            light_id = None
+            if isinstance(source, str) and source.startswith("light_"):
+                try:
+                    light_id = int(source.split("_")[1])
+                except (IndexError, ValueError):
+                    logger.warning(f"Failed to extract light ID from source: {source}")
+            
+            logger.info(f"Received alarm event for light_id={light_id}, code={code} - will be processed in main thread")
+            
+            # Set flag for main thread to refresh alarms
+            WiseledCommunicator.alarm_refresh_needed = True
+            
+    except Exception as e:
+        logger.exception(f"Error in handle_event: {str(e)}")
+
+def process_pending_events():
+    """
+    Process any pending events from the background threads.
+    This function runs in the main thread so it's safe to access session state.
+    """
+    # Skip if no pending events
+    if not hasattr(WiseledCommunicator, 'pending_events'):
+        return
+        
+    # Process pending events
+    pending_events = WiseledCommunicator.pending_events
+    WiseledCommunicator.pending_events = []
+    
+    for event_entry in pending_events:
+        try:
+            # Add to event log
+            st.session_state.event_log.insert(0, event_entry)
+            
+            # Handle alarm events
+            event = event_entry["event"]
+            if event.get("type") == "event" and event.get("topic") == "alarm" and event.get("action") == "triggered":
+                data = event.get("data", {})
+                source = data.get("source", "unknown")
+                code = data.get("code", "unknown")
+                value = data.get("value", 0)
+                timestamp = event_entry["timestamp"]
+                
+                # Extract light ID from source (format: "light_X")
+                light_id = None
+                if isinstance(source, str) and source.startswith("light_"):
+                    try:
+                        light_id = int(source.split("_")[1])
+                    except (IndexError, ValueError):
+                        continue
+                
+                # Skip if no valid light ID
+                if light_id is None:
+                    continue
+                    
+                # Update alarm status
+                existing_alarm = False
+                for alarm in st.session_state.alarm_status:
+                    if isinstance(alarm, dict) and alarm.get("light") == light_id:
+                        existing_alarm = True
+                        # Update the existing alarm
+                        alarm["code"] = code
+                        alarm["value"] = value
+                        alarm["timestamp"] = timestamp
+                        logger.info(f"Updated existing alarm for light {light_id}")
+                        break
+                
+                # Add new alarm if not already present
+                if not existing_alarm:
+                    new_alarm = {
+                        "light": light_id,
+                        "code": code,
+                        "value": value,
+                        "timestamp": timestamp
+                    }
+                    st.session_state.alarm_status.append(new_alarm)
+                    logger.info(f"Added new alarm for light {light_id} in main thread")
+                
+        except Exception as e:
+            logger.exception(f"Error processing pending event: {str(e)}")
+    
+    # Check if alarm refresh is needed
+    if hasattr(WiseledCommunicator, 'alarm_refresh_needed') and WiseledCommunicator.alarm_refresh_needed:
+        WiseledCommunicator.alarm_refresh_needed = False
+        # Refresh alarm status from the main thread
         refresh_alarm_status()
-        
-        # Display alert
-        if st.session_state.show_alerts:
-            st.toast(f"ALARM: {source} - {code} ({value})", icon="🚨")
+
+def force_refresh_alarms():
+    """Force refresh of alarm status, separate from the main refresh logic."""
+    if st.session_state.connected:
+        try:
+            alarms = st.session_state.communicator.get_alarm_status()
+            logger.info(f"Forced alarm refresh result: {alarms}")
+            if alarms is not None:
+                st.session_state.alarm_status = alarms
+        except Exception as e:
+            logger.exception(f"Error in force_refresh_alarms: {str(e)}")
 
 def add_historical_data():
     """Add current state to historical data."""
@@ -175,10 +283,14 @@ def export_error_log(filename):
         logger.error(f"Error exporting error log: {str(e)}")
         return False
 
+
 def connect_to_device():
     """Connect to the selected device and automatically refresh data on success."""
     port = st.session_state.selected_port
     baud_rate = st.session_state.selected_baud_rate
+    
+    # We don't need to disable event processing anymore,
+    # it should always be ready when UI is loaded
     
     if st.session_state.communicator.connect(port, baud_rate):
         st.session_state.connected = True
@@ -899,8 +1011,14 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    # Load settings if available
+    # Initialize session state
     init_session_state()
+    
+    # Initialize shared state for thread communication
+    WiseledCommunicator.pending_events = []
+    WiseledCommunicator.alarm_refresh_needed = False
+    
+    # Load settings if available
     load_settings()
     
     # Set theme
@@ -914,8 +1032,23 @@ def main():
         </style>
         """, unsafe_allow_html=True)
     
+    # Process any pending events from background threads
+    process_pending_events()
+    
     # Title
     st.title("Wiseled_LBR Illuminator Control System")
+    
+    # Display any pending alerts from events
+    if st.session_state.show_alerts and st.session_state.connected:
+        for alarm in st.session_state.alarm_status:
+            if isinstance(alarm, dict):
+                light_id = alarm.get("light")
+                code = alarm.get("code", "unknown")
+                value = alarm.get("value", 0)
+                
+                if light_id is not None:
+                    light_name = st.session_state.light_names[light_id-1] if 1 <= light_id <= 3 else f"Light {light_id}"
+                    st.warning(f"⚠️ Active Alarm: {light_name} - {code} ({value})")
     
     # Create tabs
     tabs = st.tabs(["Dashboard", "Error Management", "Settings"])
@@ -932,17 +1065,11 @@ def main():
     
     # Auto-refresh
     if st.session_state.connected and st.session_state.auto_refresh:
-        # Use a placeholder to trigger refresh without full page reloads
-        refresh_placeholder = st.empty()
-        refresh_time = time.time()
-        
-        # Check if a second has passed since last refresh
-        if time.time() - refresh_time >= 1.0:
+        # Check if enough time has passed since last refresh (1 second)
+        current_time = time.time()
+        if current_time - st.session_state.last_refresh_time >= 1.0:
             refresh_all_data()
-            refresh_time = time.time()
-            # Use the placeholder to avoid UI rebuild
-            with refresh_placeholder:
-                pass
+            st.session_state.last_refresh_time = current_time
 
 if __name__ == "__main__":
     main()

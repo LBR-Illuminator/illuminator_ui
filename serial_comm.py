@@ -224,7 +224,7 @@ class WiseledCommunicator:
         logger.debug("Receive thread stopped")
     
     def _process_thread(self) -> None:
-        """Thread for processing received messages."""
+        """Thread for processing received messages with improved error handling."""
         logger.debug("Process thread started")
         
         while self.running:
@@ -242,15 +242,22 @@ class WiseledCommunicator:
                 if message_type == "resp" and message_id in self.response_callbacks:
                     # Handle response message
                     callback = self.response_callbacks[message_id]
-                    callback(message)
+                    try:
+                        callback(message)
+                    except Exception as e:
+                        logger.error(f"Error in response callback for ID {message_id}: {str(e)}")
                 
                 elif message_type == "event":
-                    # Handle event message
-                    for callback in self.event_callbacks:
+                    # Log the event first
+                    logger.debug(f"Processing event: {json.dumps(message)}")
+                    
+                    # Handle event message with improved error handling
+                    for callback in list(self.event_callbacks):  # Create a copy of the list
                         try:
                             callback(message)
                         except Exception as e:
                             logger.error(f"Error in event callback: {str(e)}")
+                            # Don't remove callback on error - it might be a temporary issue
                 
                 # Mark message as processed
                 self.message_queue.task_done()
