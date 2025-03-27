@@ -323,14 +323,69 @@ class WiseledCommunicator:
     # Alarm commands
     
     def get_alarm_status(self) -> Optional[List[Dict[str, Any]]]:
-        """Get the current alarm status."""
+        """Get the current alarm status.
+        
+        Returns a list of alarm dictionaries, each containing:
+        - light: The light ID with the alarm (1-3)
+        - code: The alarm code (e.g., "over_current", "over_temperature")
+        """
         response = self.send_command(
             "alarm", "status", 
             {}
         )
-        if response and response.get("data", {}).get("status") == "ok":
-            return response.get("data", {}).get("active_alarms", [])
-        return None
+        
+        if response is None:
+            logger.warning("No response received from alarm status query")
+            return []
+            
+        # Check if we have a valid response
+        if response.get("data", {}).get("status") == "ok":
+            # Get the active_alarms array, defaulting to empty list if missing
+            active_alarms = response.get("data", {}).get("active_alarms", [])
+            
+            # Ensure it's a list
+            if active_alarms is None or not isinstance(active_alarms, list):
+                logger.warning(f"Unexpected alarm data format: {active_alarms}")
+                return []
+                
+            return active_alarms
+        else:
+            # Log the error status if available
+            error_msg = response.get("data", {}).get("message", "Unknown error")
+            logger.error(f"Error getting alarm status: {error_msg}")
+            return []
+        
+    def refresh_alarm_status(self):
+        """
+        Enhanced method to refresh alarm status with better error handling
+        and debugging information.
+        """
+        logger.debug("Refreshing alarm status...")
+        
+        try:
+            # Send the alarm status request
+            response = self.send_command("alarm", "status", {})
+            
+            # Log the raw response for debugging
+            logger.debug(f"Alarm status raw response: {response}")
+            
+            if response is None:
+                logger.warning("No response received from alarm status query")
+                return False
+                
+            # Parse and return the alarm status
+            if response.get("data", {}).get("status") == "ok":
+                active_alarms = response.get("data", {}).get("active_alarms", [])
+                logger.info(f"Active alarms: {active_alarms}")
+                return True
+            else:
+                error_msg = response.get("data", {}).get("message", "Unknown error")
+                logger.error(f"Error in alarm status response: {error_msg}")
+                return False
+                
+        except Exception as e:
+            logger.exception(f"Exception in refresh_alarm_status: {str(e)}")
+            return False
     
     def clear_alarm(self, light_id: int) -> bool:
         """Clear the alarm for a specific light."""

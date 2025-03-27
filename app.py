@@ -176,7 +176,7 @@ def export_error_log(filename):
         return False
 
 def connect_to_device():
-    """Connect to the selected device."""
+    """Connect to the selected device and automatically refresh data on success."""
     port = st.session_state.selected_port
     baud_rate = st.session_state.selected_baud_rate
     
@@ -186,7 +186,7 @@ def connect_to_device():
         # Register event handler
         st.session_state.communicator.register_event_callback(handle_event)
         
-        # Refresh data
+        # Immediately refresh all data after successful connection
         refresh_all_data()
         
         return True
@@ -227,16 +227,29 @@ def refresh_sensor_data():
     return False
 
 def refresh_alarm_status():
-    """Refresh alarm status from the device."""
+    """Refresh alarm status from the device with enhanced error handling."""
     if not st.session_state.connected:
         return False
     
-    alarm_status = st.session_state.communicator.get_alarm_status()
-    if alarm_status is not None:
+    try:
+        alarm_status = st.session_state.communicator.get_alarm_status()
+        
+        # Even if we get None back, set it to an empty list rather than None
+        if alarm_status is None:
+            alarm_status = []
+            
+        # Log the alarm status for debugging
+        logger.debug(f"Refreshed alarm status: {alarm_status}")
+        
+        # Update session state
         st.session_state.alarm_status = alarm_status
         return True
-    
-    return False
+        
+    except Exception as e:
+        logger.exception(f"Error refreshing alarm status: {str(e)}")
+        # Ensure we don't have None in the session state
+        st.session_state.alarm_status = []
+        return False
 
 def refresh_error_log():
     """Refresh error log from the device."""
@@ -267,13 +280,40 @@ def refresh_system_info():
     # return False
 
 def refresh_all_data():
-    """Refresh all data from the device."""
-    refresh_light_intensities()
-    refresh_sensor_data()
-    refresh_alarm_status()
+    """
+    Refresh all data from the device with comprehensive error handling.
+    This is called after connecting and when manually refreshing data.
+    """
+    if not st.session_state.connected:
+        logger.warning("Cannot refresh data: Not connected")
+        return False
+    
+    # Track success of each operation
+    success = True
+    
+    # Refresh light intensities
+    if not refresh_light_intensities():
+        logger.warning("Failed to refresh light intensities")
+        success = False
+    
+    # Refresh sensor data
+    if not refresh_sensor_data():
+        logger.warning("Failed to refresh sensor data")
+        success = False
+    
+    # Refresh alarm status
+    if not refresh_alarm_status():
+        logger.warning("Failed to refresh alarm status")
+        success = False
+    
+    # These operations are optional and may not be implemented in current firmware
     refresh_error_log()
     refresh_system_info()
+    
+    # Add to historical data regardless of partial failures
     add_historical_data()
+    
+    return success
 
 def set_light_intensity(light_id, intensity):
     """Set the intensity of a specific light."""
@@ -395,7 +435,7 @@ def load_settings():
     return False
 
 def render_dashboard():
-    """Render the dashboard tab."""
+    """Render the dashboard tab with light controls, sensor monitoring, and status."""
     st.header("Light Control Dashboard")
     
     # Connection status and refresh button
@@ -450,7 +490,7 @@ def render_dashboard():
                       key=f"light_{light_id}_intensity", 
                       on_change=on_light_change)
             
-            # Show sensor data
+            # Show sensor data if available
             if i < len(st.session_state.sensor_data):
                 sensor = st.session_state.sensor_data[i]
                 current = sensor.get("current", 0)
@@ -486,16 +526,25 @@ def render_dashboard():
                 
                 # Show alarm status and clear button if there's an alarm
                 has_alarm = False
-                for alarm in st.session_state.alarm_status:
-                    if alarm.get("light") == light_id:
-                        has_alarm = True
-                        code = alarm.get("code", "unknown")
-                        st.error(f"ALARM: {code}")
-                        
-                        if st.button(f"Clear Alarm", key=f"clear_alarm_{light_id}"):
-                            clear_alarm(light_id)
+                alarm_codes = []
                 
-                if not has_alarm:
+                # Check if alarm_status is a list and not None
+                if isinstance(st.session_state.alarm_status, list):
+                    for alarm in st.session_state.alarm_status:
+                        # Ensure alarm is a dictionary and has the expected keys
+                        if isinstance(alarm, dict) and alarm.get("light") == light_id:
+                            has_alarm = True
+                            code = alarm.get("code", "unknown")
+                            alarm_codes.append(code)
+                
+                if has_alarm:
+                    for code in alarm_codes:
+                        st.error(f"ALARM: {code}")
+                    
+                    if st.button(f"Clear Alarm", key=f"clear_alarm_{light_id}"):
+                        if clear_alarm(light_id):
+                            st.success(f"Alarm cleared for Light {light_id}")
+                else:
                     st.success("Status: Normal")
     
     # Presets
@@ -730,6 +779,7 @@ def render_settings():
             if st.button("Connect"):
                 if connect_to_device():
                     st.success(f"Connected to {selected_port}")
+                    # Data has already been refreshed in connect_to_device()
                 else:
                     st.error("Failed to connect")
     
