@@ -152,6 +152,10 @@ def handle_event(event):
             # Set flag for main thread to refresh alarms
             WiseledCommunicator.alarm_refresh_needed = True
             
+            # Force a refresh on the next iteration (via session state)
+            if not hasattr(WiseledCommunicator, 'force_refresh'):
+                WiseledCommunicator.force_refresh = True
+            
     except Exception as e:
         logger.exception(f"Error in handle_event: {str(e)}")
 
@@ -167,6 +171,8 @@ def process_pending_events():
     # Process pending events
     pending_events = WiseledCommunicator.pending_events
     WiseledCommunicator.pending_events = []
+    
+    alarm_updated = False
     
     for event_entry in pending_events:
         try:
@@ -204,6 +210,7 @@ def process_pending_events():
                         alarm["value"] = value
                         alarm["timestamp"] = timestamp
                         logger.info(f"Updated existing alarm for light {light_id}")
+                        alarm_updated = True
                         break
                 
                 # Add new alarm if not already present
@@ -216,6 +223,7 @@ def process_pending_events():
                     }
                     st.session_state.alarm_status.append(new_alarm)
                     logger.info(f"Added new alarm for light {light_id} in main thread")
+                    alarm_updated = True
                 
         except Exception as e:
             logger.exception(f"Error processing pending event: {str(e)}")
@@ -225,6 +233,9 @@ def process_pending_events():
         WiseledCommunicator.alarm_refresh_needed = False
         # Refresh alarm status from the main thread
         refresh_alarm_status()
+        alarm_updated = True
+    
+    return alarm_updated
 
 def force_refresh_alarms():
     """Force refresh of alarm status, separate from the main refresh logic."""
@@ -752,6 +763,16 @@ def render_dashboard():
             else:
                 st.error("Failed to export data")
 
+     # Auto-refresh indicator                
+    if st.session_state.auto_refresh:
+        st.markdown("---")
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            st.write("🔄 Auto-refresh:")
+        with col2:
+            st.write(f"Last update: {datetime.now().strftime('%H:%M:%S')}")
+
+
 def render_error_log():
     """Render the error log tab."""
     st.header("Error Management")
@@ -1033,7 +1054,7 @@ def main():
         """, unsafe_allow_html=True)
     
     # Process any pending events from background threads
-    process_pending_events()
+    alarm_updated = process_pending_events()
     
     # Title
     st.title("Wiseled_LBR Illuminator Control System")
@@ -1063,13 +1084,23 @@ def main():
     with tabs[2]:
         render_settings()
     
-    # Auto-refresh
-    if st.session_state.connected and st.session_state.auto_refresh:
+    # Check if we need to force a refresh due to alarms
+    forced_refresh = False
+    if hasattr(WiseledCommunicator, 'force_refresh') and WiseledCommunicator.force_refresh:
+        WiseledCommunicator.force_refresh = False
+        forced_refresh = True
+    
+    # Auto-refresh implementation
+    if st.session_state.connected and (st.session_state.auto_refresh or alarm_updated or forced_refresh):
         # Check if enough time has passed since last refresh (1 second)
         current_time = time.time()
-        if current_time - st.session_state.last_refresh_time >= 1.0:
+        if current_time - st.session_state.last_refresh_time >= 1.0 or alarm_updated or forced_refresh:
             refresh_all_data()
             st.session_state.last_refresh_time = current_time
+            
+            # Use st.rerun() to force page refresh
+            time.sleep(0.1)  # Small delay to ensure data is updated
+            st.rerun()
 
 if __name__ == "__main__":
     main()
