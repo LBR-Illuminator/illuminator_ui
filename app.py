@@ -88,13 +88,13 @@ def init_session_state():
     
     if 'warning_thresholds' not in st.session_state:
         st.session_state.warning_thresholds = {
-            'current': 40.0,       # mA
+            'current': 40.0,       # A
             'temperature': 70.0    # °C
         }
     
     if 'critical_thresholds' not in st.session_state:
         st.session_state.critical_thresholds = {
-            'current': 45.0,       # mA
+            'current': 45.0,       # A
             'temperature': 80.0    # °C
         }
     
@@ -240,27 +240,31 @@ def refresh_alarm_status():
 
 def refresh_error_log():
     """Refresh error log from the device."""
-    if not st.session_state.connected:
-        return False
-    
-    error_log = st.session_state.communicator.get_error_log()
-    if error_log is not None:
-        st.session_state.error_log = error_log
-        return True
-    
+    # Not implemented in the current firmware version
     return False
+    # if not st.session_state.connected:
+    #     return False
+    
+    # error_log = st.session_state.communicator.get_error_log()
+    # if error_log is not None:
+    #     st.session_state.error_log = error_log
+    #     return True
+    
+    # return False
 
 def refresh_system_info():
     """Refresh system information from the device."""
-    if not st.session_state.connected:
-        return False
-    
-    system_info = st.session_state.communicator.get_system_info()
-    if system_info is not None:
-        st.session_state.system_info = system_info
-        return True
-    
+    # Not implemented in the current firmware version
     return False
+    # if not st.session_state.connected:
+    #     return False
+    
+    # system_info = st.session_state.communicator.get_system_info()
+    # if system_info is not None:
+    #     st.session_state.system_info = system_info
+    #     return True
+    
+    # return False
 
 def refresh_all_data():
     """Refresh all data from the device."""
@@ -467,11 +471,11 @@ def render_dashboard():
                 
                 # Render with appropriate styling
                 if current_status == "critical":
-                    st.error(f"Current: {current:.1f} mA")
+                    st.error(f"Current: {current:.1f} A")
                 elif current_status == "warning":
-                    st.warning(f"Current: {current:.1f} mA")
+                    st.warning(f"Current: {current:.1f} A")
                 else:
-                    st.info(f"Current: {current:.1f} mA")
+                    st.info(f"Current: {current:.1f} A")
                 
                 if temp_status == "critical":
                     st.error(f"Temperature: {temperature:.1f} °C")
@@ -551,7 +555,7 @@ def render_dashboard():
             # Current chart
             current_chart = alt.Chart(df).mark_line().encode(
                 x=alt.X('timestamp:T', title='Time'),
-                y=alt.Y('current:Q', title='Current (mA)'),
+                y=alt.Y('current:Q', title='Current (A)'),
                 color=alt.Color('light_id:N', title='Light',
                               scale=alt.Scale(domain=[1, 2, 3], 
                                              range=['#FFFFFF', '#00FF00', '#FF0000']))
@@ -750,7 +754,7 @@ def render_settings():
     with threshold_cols[0]:
         st.write("**Warning Thresholds**")
         
-        warning_current = st.number_input("Current Warning (mA)", 
+        warning_current = st.number_input("Current Warning (A)", 
                                          min_value=0.0, max_value=100.0, step=0.5,
                                          value=st.session_state.warning_thresholds["current"],
                                          key="warning_current")
@@ -768,7 +772,7 @@ def render_settings():
     with threshold_cols[1]:
         st.write("**Critical Thresholds**")
         
-        critical_current = st.number_input("Current Critical (mA)", 
+        critical_current = st.number_input("Current Critical (A)", 
                                           min_value=0.0, max_value=100.0, step=0.5,
                                           value=st.session_state.critical_thresholds["current"],
                                           key="critical_current")
